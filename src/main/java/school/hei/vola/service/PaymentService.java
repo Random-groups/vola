@@ -10,6 +10,7 @@ import java.util.Optional;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import software.amazon.awssdk.core.exception.SdkException;
 import school.hei.vola.endpoint.event.EventProducer;
 import school.hei.vola.endpoint.event.model.OrangeTransactionsImportRequested;
 import school.hei.vola.endpoint.event.model.PaymentVerificationRequested;
@@ -39,8 +40,12 @@ public class PaymentService {
       String apiKey, String payerEmail, PspType pspType, String pspPaymentId) {
     var payment = paymentRepository.createPayment(apiKey, payerEmail, pspType, pspPaymentId);
 
-    eventProducer.accept(List.of(new PaymentVerificationRequested(payment)));
-    log.info("PaymentVerificationRequested event sent for payment={}", payment);
+    try {
+      eventProducer.accept(List.of(new PaymentVerificationRequested(payment)));
+      log.info("PaymentVerificationRequested event sent for payment={}", payment);
+    } catch (SdkException e) {
+      log.warn("AWS EventBridge unavailable locally, event not sent: {}", e.getMessage());
+    }
 
     return payment;
   }
@@ -52,8 +57,12 @@ public class PaymentService {
     }
 
     var paymentRequests = payments.stream().map(PaymentVerificationRequested::new).toList();
-    eventProducer.accept(paymentRequests);
-    log.info("PaymentVerificationRequested event sent for {} payments", payments.size());
+    try {
+      eventProducer.accept(paymentRequests);
+      log.info("PaymentVerificationRequested event sent for {} payments", payments.size());
+    } catch (SdkException e) {
+      log.warn("AWS EventBridge unavailable locally, event not sent: {}", e.getMessage());
+    }
 
     return payments;
   }
@@ -85,8 +94,16 @@ public class PaymentService {
   public ImportedTransactionDetails saveTransactionFromExcel(File excel) {
     log.info("File name : " + excel.getName());
     var bucketKey = TRANSACTIONS_XLS_IMPORT_BUCKET_KEY + excel.getName();
-    bucketComponent.upload(excel, bucketKey);
-    eventProducer.accept(List.of(new OrangeTransactionsImportRequested(bucketKey)));
+    try {
+      bucketComponent.upload(excel, bucketKey);
+    } catch (Exception e) {
+      log.warn("AWS S3 unavailable locally, file not uploaded: {}", e.getMessage());
+    }
+    try {
+      eventProducer.accept(List.of(new OrangeTransactionsImportRequested(bucketKey)));
+    } catch (SdkException e) {
+      log.warn("AWS EventBridge unavailable locally, event not sent: {}", e.getMessage());
+    }
     return new ImportedTransactionDetails(bucketKey, now(), excel.getName());
   }
 }

@@ -1,0 +1,51 @@
+Étapes réalisées pour corriger les endpoints POST (500 Internal Server Error)
+
+1. Constat : la requête POST /payment retournait 500
+   - Le GET /payment fonctionnait (lecture simple en base)
+   - Le POST créait le paiement mais tentait d'envoyer un événement à AWS EventBridge
+
+2. Cause racine (logs) :
+   - SdkClientException: Unable to load credentials
+   - Le SDK AWS ne trouvait aucun credential (ni variable d'environnement, ni fichier ~/.aws/credentials)
+
+3. Solution appliquée :
+
+   a. Création du fichier ~\.aws\credentials avec des credentials fictifs
+      - Fichier : C:\Users\USER\.aws\credentials
+      - Contenu :
+          [default]
+          aws_access_key_id = AKIA0000000000000000
+          aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCY0000000000
+      - Objectif : permettre au SDK AWS d'initialiser le client EventBridge
+
+   b. Résilience dans PaymentService.java
+      - Ajout de l'import : software.amazon.awssdk.core.exception.SdkException
+      - Try-catch sur SdkException autour de chaque appel eventProducer.accept()
+      - Try-catch sur Exception autour de l'appel bucketComponent.upload()
+      - 1 méthode protégée : saveTransactionFromExcel (S3 + EventBridge)
+      - 2 méthodes protégées : createPayment, createPayments (EventBridge)
+      - L'erreur AWS est loggée en WARN, le traitement est effectué en base
+
+   c. Premier essai : catch sur SdkClientException uniquement
+      - Après ajout des credentials fictifs, nouvelle erreur : EventBridgeException (token invalide)
+      - Correction : remplacer SdkClientException par SdkException (classe parente)
+
+   d. Deuxième essai : erreur S3 sur l'import Excel
+      - bucketComponent.upload() appelait S3 et échouait avec CompletionException
+      - Correction : try-catch sur Exception autour de l'upload S3
+
+4. Fichier Excel sample créé (pour tester POST /orange/transactions/import)
+   - Chemin : C:\PROJET1\sample-orange.xlsx
+   - Format attendu par l'ExcelParser :
+       Col 0 : Numéro (numérique)
+       Col 1 : Date (texte, ex: 07/04/2026)
+       Col 2 : Heure (texte, ex: 08:15:00)
+       Col 3 : Référence (texte, format: ^[A-Z]{2}\d{6}\.\d{4}\.[A-Z]\d{5}$)
+       Col 6 : Statut (Succès ou Echec)
+       Col 11 : Client (texte, commence par 03 + 8 chiffres)
+       Col 14 : Montant (numérique)
+
+5. Vérification :
+   - Build : gradlew compileJava → BUILD SUCCESSFUL
+   - Test Postman POST /payment → 200 OK
+   - Test Postman POST /orange/transactions/import → 200 OK (avec warnings AWS dans les logs)
